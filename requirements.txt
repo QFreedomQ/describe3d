@@ -1,5 +1,5 @@
 trimesh
 opencv-python
 click
-redner-gpu
+pytorch3d
 requests
