@@ -290,7 +290,7 @@ def prompt_synthesis(ws,params,Synthesis):
             with torch.no_grad():
                 img_gen = Synthesis(latent)
 
-            torchvision.utils.save_image(img_gen,f"{opt.inter_dir}/texture_map/{str(i).zfill(5)}_tex.jpg", normalize=True, range=(-1, 1))
+            torchvision.utils.save_image(img_gen,f"{opt.inter_dir}/texture_map/{str(i).zfill(5)}_tex.jpg", normalize=True)
             cv2.imwrite(os.path.join(opt.inter_dir,"render",f"{str(i).zfill(5)}_render.jpg"),img_rgb)
 
     # 创新点3：生成优化报告
