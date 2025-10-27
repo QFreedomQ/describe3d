@@ -13,8 +13,17 @@ from torchvision.transforms.transforms import ToPILImage
 import legacy
 from torch import optim
 from tqdm import tqdm
-import pyredner
-from pyredner.load_obj import load_mtl
+from pytorch3d.structures import Meshes
+from pytorch3d.renderer import (
+    look_at_view_transform,
+    FoVPerspectiveCameras, 
+    PointLights,
+    RasterizationSettings, 
+    MeshRenderer, 
+    MeshRasterizer,
+    SoftPhongShader,
+    TexturesVertex
+)
 
 
 #to replace trimesh.load
@@ -119,29 +128,59 @@ def concrete_synthesis(opt,shape_label,texture_label):
     return ws,pred_param,Synthesis
 
 
-def diff_render(render_img,curr_verts):
+def diff_render(render_img, curr_verts):
     device = "cuda"
     mean_verts = torch.from_numpy(np.load("./predef/mean_verts.npy")).cuda()
-    m = load_mtl("../predef/material_0.mtl")['material_0']
-    spec = torch.tensor(m.Ks, dtype=torch.float32, device=device)
-    rough = torch.tensor([2.0 / (m.Ns + 2.0)], dtype=torch.float32, device=device)
-    faces = torch.from_numpy(np.load("./predef/faces.npy")).to(torch.int32).cuda()
-    uv = np.load("./predef/uv.npy")
-    for i in range(uv.shape[0]):
-        uv[i][1] = 1 - uv[i][1]
-    uv = torch.from_numpy(uv).to(torch.float32).cuda()
-
-    m = pyredner.Material(diffuse_reflectance=(render_img[0] + 1) / 2,
-                          specular_reflectance=spec,
-                          roughness=rough)
-
-    obj_pred = pyredner.Object(vertices=curr_verts + mean_verts, indices=faces, uvs=uv, material=m)
-    cam_pred = pyredner.automatic_camera_placement([obj_pred], resolution=(512, 512))
-    cam_pred.look_at[-1] = -cam_pred.look_at[-1]
-    cam_pred.position[-1] = -cam_pred.position[-1]
-    curr_scene_pred = pyredner.Scene(camera=cam_pred, objects=[obj_pred])
-    img_pred = pyredner.render_albedo(curr_scene_pred)
-
+    faces = torch.from_numpy(np.load("./predef/faces.npy")).to(torch.int64).cuda()
+    
+    vertices = (curr_verts + mean_verts).unsqueeze(0)
+    faces_tensor = faces.unsqueeze(0)
+    
+    num_verts = vertices.shape[1]
+    texture_rgb = (render_img[0] + 1) / 2
+    texture_rgb = texture_rgb.permute(1, 2, 0).reshape(-1, 3)
+    
+    if texture_rgb.shape[0] < num_verts:
+        texture_rgb = torch.nn.functional.interpolate(
+            texture_rgb.unsqueeze(0).permute(0, 2, 1),
+            size=num_verts,
+            mode='linear',
+            align_corners=False
+        ).permute(0, 2, 1).squeeze(0)
+    elif texture_rgb.shape[0] > num_verts:
+        indices = torch.linspace(0, texture_rgb.shape[0] - 1, num_verts).long()
+        texture_rgb = texture_rgb[indices]
+    
+    verts_rgb = texture_rgb.unsqueeze(0)
+    textures = TexturesVertex(verts_features=verts_rgb)
+    mesh = Meshes(verts=vertices, faces=faces_tensor, textures=textures)
+    
+    R, T = look_at_view_transform(dist=2.7, elev=0, azim=0)
+    cameras = FoVPerspectiveCameras(device=device, R=R, T=T)
+    
+    raster_settings = RasterizationSettings(
+        image_size=512,
+        blur_radius=0.0,
+        faces_per_pixel=1,
+    )
+    
+    lights = PointLights(device=device, location=[[0.0, 0.0, 3.0]])
+    
+    renderer = MeshRenderer(
+        rasterizer=MeshRasterizer(
+            cameras=cameras,
+            raster_settings=raster_settings
+        ),
+        shader=SoftPhongShader(
+            device=device,
+            cameras=cameras,
+            lights=lights
+        )
+    )
+    
+    images = renderer(mesh)
+    img_pred = images[0, ..., :3]
+    
     return img_pred
 
 
