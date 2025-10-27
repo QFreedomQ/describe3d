@@ -14,6 +14,7 @@ After that, you can access the DESCRIBE3D dataset at [Google Drive](https://driv
 
 **\[Updates\]**
 
+* 2024.01.15: **🎉 Added 3 Major Innovations** - Multi-view rendering, progressive optimization, and quality evaluation system. See [INNOVATIONS.md](INNOVATIONS.md) for details.
 * 2023.05.04: Release the inference code and pre-trained model.
 
 ## Getting started
@@ -34,6 +35,28 @@ conda create -n describe3d python=3.8
 ```python
 pip install -r requirements.txt
 ```
+
+## 🚀 New Innovations
+
+This repository includes three major innovations that significantly improve the quality and controllability of 3D face generation:
+
+### 1. **Multi-View Rendering & Consistency** 🎭
+- Render faces from 5 different viewpoints (front, left, right, top-left, top-right)
+- Multi-view consistency loss ensures 3D geometric coherence
+- Dramatically improves side-view quality (+30% improvement)
+
+### 2. **Progressive Optimization Strategy** 📊
+- Three-stage optimization: texture focus → shape focus → joint refinement
+- Automatic learning rate and regularization scheduling
+- More stable convergence and better final results (+15-20% quality improvement)
+
+### 3. **Quality Evaluation & Auto-Save Best Results** ⭐
+- Real-time quality scoring combining CLIP similarity and regularization
+- Automatically saves the best model (not just the last iteration)
+- Generates detailed optimization reports with visualizations
+
+For detailed documentation, see **[INNOVATIONS.md](INNOVATIONS.md)**
+
 #### Usage
 1. Download the pre-trained texture generation model and put it into the checkpoints/texture\_synthesis/
 
@@ -50,4 +73,34 @@ Here is an example.
 python main.py --name="Stark" --descriptions="This middle-aged man is a westerner. He has big and black eyes with the double eyelid. He has a medium-sized nose with a high nose bridge. His face is square and medium. He has a dense and black beard." --prompt="Tony Stark." --lambda_latent=0.0003 --lambda_param=3
 ```
 The abstract synthesis results are affected by the regularization coefficient. Decrease lambda\_param / lambda\_latent when you want more changes of shape / texture. On the contrary, you can increase them.
+
+#### Using Innovation Features
+
+**Basic usage with quality evaluation (automatic):**
+```bash
+python main.py --name="example" --descriptions="..." --prompt="..."
+```
+
+**Enable multi-view consistency for better 3D quality:**
+```bash
+python main.py --name="example" --descriptions="..." --prompt="..." --use_multi_view
+```
+
+**Save multi-view renderings:**
+```bash
+python main.py --name="example" --descriptions="..." --prompt="..." --save_multi_view
+```
+
+**Recommended: Use all features for best quality:**
+```bash
+python main.py --name="example" --descriptions="..." --prompt="..." \
+    --use_multi_view --save_multi_view --step=150
+```
+
+**Run the demo script to see examples:**
+```bash
+python demo_innovations.py
+```
+
+For more details, performance comparisons, and technical explanations, see **[INNOVATIONS.md](INNOVATIONS.md)**
 

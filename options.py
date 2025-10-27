@@ -23,6 +23,10 @@ class Options():
         # self.parser.add_argument('--prompt_dir',type=str,default="./result/prompt_synthesis/",help="prompt save path")
         self.parser.add_argument('--result_dir',type=str,default="./result/final_result/",help="result save path")
         self.parser.add_argument('--inter_dir',type=str,default="./result/inter_result/",help="intermediate result")
+        
+        # 创新点相关参数
+        self.parser.add_argument('--use_multi_view', action='store_true', help="enable multi-view consistency loss")
+        self.parser.add_argument('--save_multi_view', action='store_true', help="save multi-view renderings")
 
 
 
