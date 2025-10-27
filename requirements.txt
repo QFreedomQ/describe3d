@@ -3,3 +3,8 @@ opencv-python
 click
 pytorch3d
 requests
+matplotlib
+numpy
+pillow
+tqdm
+torchvision

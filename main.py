@@ -24,6 +24,7 @@ from pytorch3d.renderer import (
     SoftPhongShader,
     TexturesVertex
 )
+from innovations import MultiViewRenderer, ProgressiveOptimizer, QualityEvaluator
 
 
 #to replace trimesh.load
@@ -197,12 +198,43 @@ def prompt_synthesis(ws,params,Synthesis):
 
     clip_loss = CLIPLoss()
 
+    # 创新点2：初始化渐进式优化器
+    progressive_opt = ProgressiveOptimizer(
+        total_steps=opt.step,
+        initial_lr_latent=opt.lr_latent,
+        initial_lr_param=opt.lr_param,
+        initial_lambda_latent=opt.lambda_latent,
+        initial_lambda_param=opt.lambda_param
+    )
+    
     latent_optimizer = optim.Adam([latent], lr=opt.lr_latent)
     params_optimizer = optim.Adam([param], lr=opt.lr_param)
 
+    # 创新点1：初始化多视角渲染器
+    multi_view_renderer = MultiViewRenderer(device="cuda", image_size=512)
+    
+    # 创新点3：初始化质量评估器
+    curr_save_folder = os.path.join(opt.result_dir, opt.name, opt.prompt if opt.prompt else "default")
+    if not os.path.exists(curr_save_folder):
+        os.makedirs(curr_save_folder, exist_ok=True)
+    quality_evaluator = QualityEvaluator(save_dir=curr_save_folder)
+
     pbar = tqdm(range(opt.step))
+    
+    current_stage = ""
 
     for i in pbar:
+        
+        # 创新点2：获取当前阶段的超参数
+        stage_params = progressive_opt.get_current_params(i)
+        
+        # 如果进入新阶段，更新优化器学习率
+        if stage_params['stage'] != current_stage:
+            current_stage = stage_params['stage']
+            for param_group in latent_optimizer.param_groups:
+                param_group['lr'] = stage_params['lr_latent']
+            for param_group in params_optimizer.param_groups:
+                param_group['lr'] = stage_params['lr_param']
 
         img_gen = Synthesis(latent)  ## 1*3*512*512
 
@@ -210,8 +242,8 @@ def prompt_synthesis(ws,params,Synthesis):
 
         render_img = img_gen.permute(0,2,3,1)
 
-        ## rendering only the front image is enough to generate reasonable results and can save lots of time.
-        img_pred = diff_render(render_img,curr_verts)
+        # 创新点1：使用多视角渲染（主要使用前视图进行优化）
+        img_pred = multi_view_renderer.render_multi_view(curr_verts, render_img, 'front')
         img_rgb = img_pred.detach().cpu().numpy()[:,:,[2,1,0]]*255
         img_chw = img_pred.unsqueeze(0).permute(0,3,1,2)
 
@@ -220,7 +252,19 @@ def prompt_synthesis(ws,params,Synthesis):
         l2_loss_latent = ((latent-latent_code_int)**2).sum()
         l2_loss_param = ((param-params)**2).sum()
 
-        loss = c_loss + opt.lambda_latent * l2_loss_latent + opt.lambda_param * l2_loss_param
+        # 创新点1：添加多视角一致性损失（可选，通过配置开关）
+        if opt.use_multi_view and i % 5 == 0:  # 每5步计算一次以节省时间
+            consistency_loss = multi_view_renderer.compute_multi_view_consistency_loss(curr_verts, render_img)
+            consistency_weight = 0.1
+        else:
+            consistency_loss = 0.0
+            consistency_weight = 0.0
+
+        # 使用渐进式权重
+        loss = (c_loss + 
+                stage_params['lambda_latent'] * l2_loss_latent + 
+                stage_params['lambda_param'] * l2_loss_param +
+                consistency_weight * consistency_loss)
 
         latent_optimizer.zero_grad()
         params_optimizer.zero_grad()
@@ -228,9 +272,17 @@ def prompt_synthesis(ws,params,Synthesis):
         latent_optimizer.step()
         params_optimizer.step()
 
+        # 创新点3：评估质量并保存最佳结果
+        is_best, quality_score = quality_evaluator.evaluate(
+            i, c_loss, l2_loss_latent, l2_loss_param, loss
+        )
+        
+        if is_best:
+            quality_evaluator.save_best_state(latent, param, i)
+
         pbar.set_description(
             (
-                f"loss: {loss.item():.4f};"
+                f"{current_stage} | loss: {loss.item():.4f} | quality: {quality_score:.4f}"
             )
         )
 
@@ -240,6 +292,19 @@ def prompt_synthesis(ws,params,Synthesis):
 
             torchvision.utils.save_image(img_gen,f"{opt.inter_dir}/texture_map/{str(i).zfill(5)}_tex.jpg", normalize=True, range=(-1, 1))
             cv2.imwrite(os.path.join(opt.inter_dir,"render",f"{str(i).zfill(5)}_render.jpg"),img_rgb)
+
+    # 创新点3：生成优化报告
+    report = quality_evaluator.generate_report()
+    print(f"\n=== 优化报告 ===")
+    print(f"最佳迭代: {report['best_iteration']}")
+    print(f"最佳质量分数: {report['best_score']:.4f}")
+    print(f"报告已保存至: {curr_save_folder}")
+    
+    # 加载最佳结果
+    best_state = torch.load(os.path.join(curr_save_folder, 'best_model.pth'))
+    latent = best_state['latent'].cuda()
+    param = best_state['param'].cuda()
+    print(f"已加载最佳结果（迭代 {best_state['iteration']}）")
 
     img_final = Synthesis(latent)
     # texture_final = PIL.Image.fromarray(np.clip(np.uint8(((img_final[0].permute(1,2,0).detach().cpu().numpy()+1)/2)*255),0,255))
@@ -251,11 +316,21 @@ def prompt_synthesis(ws,params,Synthesis):
     final_mesh = mean_mesh.copy()
     final_mesh.visual.material.image = texture_final
     final_mesh.vertices = mean_mesh.vertices + verts_final
-    curr_save_folder = os.path.join(opt.result_dir,opt.name,opt.prompt)
-    if not os.path.exists(curr_save_folder):
-        os.mkdir(curr_save_folder)
 
     final_mesh.export(os.path.join(curr_save_folder,"result_prompt.obj"));
+    
+    # 创新点1：保存多视角渲染结果
+    if opt.save_multi_view:
+        print("\n生成多视角渲染图像...")
+        with torch.no_grad():
+            curr_verts = torch.matmul(param,core).reshape(-1,3)
+            render_img = img_final.permute(0,2,3,1)
+            
+            for view_name in ['front', 'left', 'right', 'top_left', 'top_right']:
+                view_img = multi_view_renderer.render_multi_view(curr_verts, render_img, view_name)
+                view_rgb = view_img.detach().cpu().numpy()[:,:,[2,1,0]]*255
+                cv2.imwrite(os.path.join(curr_save_folder, f"view_{view_name}.jpg"), view_rgb)
+        print(f"多视角图像已保存至: {curr_save_folder}")
 
 
 def gen_full_mesh(opt):
